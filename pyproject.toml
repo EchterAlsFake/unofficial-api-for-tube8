@@ -1,0 +1,35 @@
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "tube8_api"
+version = "1.0"
+description = "An API for tube8.com"
+authors = [
+  {name = "EchterAlsFake", email = "EchterAlsFake@proton.me"}
+]
+requires-python = ">=3.12"
+license = "LGPL-3.0-only"
+license-files = ["LICENSE"]
+keywords = ["redtube", "phub", "porn", "api", "web scrapper", "api wrapper"]
+classifiers = [
+  "Programming Language :: Python"
+]
+dependencies = [
+  "eaf_base_api",
+  "m3u8",
+  "bs4",
+]
+
+[project.optional-dependencies]
+av = ["av; python_version >= '3.10'"]
+full = ["lxml"] # H2 for HTTP 2.0 support, LXML for faster parsing speed, though optional :)
+
+[project.urls]
+Documentation = "https://github.com/EchterAlsFake/API_Docs/blob/master/Porn_APIs/tube8.md"
+Repository = "https://github.com/EchterAlsFake/tube8_api"
+
+[tool.uv.build-backend]
+module-name = "tube8_api"
+module-root = ""
