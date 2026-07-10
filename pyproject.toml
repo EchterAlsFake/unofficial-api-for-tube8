@@ -3,33 +3,53 @@ requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"
 
 [project]
-name = "tube8_api"
-version = "1.0"
-description = "An API for tube8.com"
+name = "unofficial-api-for-tube8"
+version = "1.1"
+description = "An asynchronous API wrapper and scraper for tube8.com"
 authors = [
   {name = "EchterAlsFake", email = "EchterAlsFake@proton.me"}
 ]
 requires-python = ">=3.12"
 license = "LGPL-3.0-only"
 license-files = ["LICENSE"]
-keywords = ["redtube", "phub", "porn", "api", "web scrapper", "api wrapper"]
+keywords = [
+    "api",
+    "scraper",
+    "async",
+    "asyncio",
+    "video-downloader",
+    "selectolax",
+    "curl-cffi",
+    "tube8"
+]
 classifiers = [
-  "Programming Language :: Python"
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Video"
 ]
 dependencies = [
-  "eaf_base_api",
+  "eaf-base-api",
   "m3u8",
-  "bs4",
+  "selectolax",
 ]
 
 [project.optional-dependencies]
-av = ["av; python_version >= '3.10'"]
-full = ["lxml"] # H2 for HTTP 2.0 support, LXML for faster parsing speed, though optional :)
+av = ["av"]
 
 [project.urls]
-Documentation = "https://github.com/EchterAlsFake/API_Docs/blob/master/Porn_APIs/tube8.md"
-Repository = "https://github.com/EchterAlsFake/tube8_api"
+Homepage = "https://github.com/EchterAlsFake/unofficial-api-for-tube8"
+Repository = "https://github.com/EchterAlsFake/unofficial-api-for-tube8"
+"Bug Tracker" = "https://github.com/EchterAlsFake/unofficial-api-for-tube8/issues"
 
 [tool.uv.build-backend]
 module-name = "tube8_api"
 module-root = ""
+
+[tool.uv.sources]
+eaf-base-api = { path = "../eaf_base_api", editable = true }

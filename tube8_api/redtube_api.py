@@ -18,35 +18,27 @@ from __future__ import annotations
 import os
 import re
 import json
-import logging
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 from typing import AsyncGenerator
-from functools import cached_property
 from curl_cffi import Response, AsyncSession
+from selectolax.lexbor import LexborHTMLParser
+from dataclasses import dataclass, fields
 from base_api.modules.type_hints import DownloadReport
-from base_api.base import BaseCore, setup_logger, Helper
-from base_api.modules.errors import InvalidProxy, UnknownError, NetworkingError, BotProtectionDetected, ResourceGone
-try:
-    import lxml
-    parser = "lxml" # Faster speeds, but more dependencies
+from base_api import BaseCore, Helper, BaseMedia, DownloadConfigHLS, ScrapeResult
+from base_api.modules.errors import InvalidProxy, UnknownError, NetworkRequestError, BotProtectionDetected, ResourceGone
 
-except (ModuleNotFoundError, ImportError):
-    parser = "html.parser" # Fallback to classic HTML parser (will work fine)
-
-try:
-    from modules.consts import *
-    from modules.errors import *
-    from modules.type_hints import *
-
-except (ModuleNotFoundError, ImportError):
-    from .modules.consts import *
-    from .modules.errors import *
-    from .modules.type_hints import *
+from tube8_api.modules.consts import HEADERS, COOKIES, extractor_search
+from tube8_api.modules.errors import (NetworkError, NotFound, UnknownNetworkError, BotDetection, ProxyError,
+                                      DownloadFailed)
+from tube8_api.modules.type_hints import on_error_hint
 
 
 async def on_error(url: str, error: Exception, attempt: int) -> bool:
-    print(f"URL: {url}, ERROR: {error}, Attempt: {attempt}")
+    logger.error(f"URL: {url}, ERROR: {error}, Attempt: {attempt}")
 
     if isinstance(error, ResourceGone):
         return False
@@ -55,6 +47,7 @@ async def on_error(url: str, error: Exception, attempt: int) -> bool:
 
 
 async def get_html_content(core: BaseCore, url: str) -> str | None | dict:
+    logger.debug(f"Fetching HTML content for URL: {url}")
     try:
         content = await core.fetch(url)
         if isinstance(content, str):
@@ -64,7 +57,7 @@ async def get_html_content(core: BaseCore, url: str) -> str | None | dict:
             if content.status_code == 404:
                 raise NotFound(f"Server returned 404 for: {url}")
 
-    except NetworkingError as e:
+    except NetworkRequestError as e:
         raise NetworkError(str(e)) from e
 
     except InvalidProxy as e:
@@ -76,110 +69,89 @@ async def get_html_content(core: BaseCore, url: str) -> str | None | dict:
     except UnknownError as e:
         raise UnknownNetworkError(str(e)) from e
 
-class Video:
-    def __init__(self, url: str, core: BaseCore, html_content: str | None = None):
-        self.core = core
-        self.url = url
-        self.html_content = html_content
-        self._soup = None
-        self.script = None
-        self.logger = setup_logger(name="Thumbzilla API - [Video]", level=logging.ERROR)
-
-    def enable_logging(self, log_file: str | None = None, level: int | None =None, log_ip: str | None = None, log_port: int | None = None):
-        if not level:
-            level = logging.DEBUG
-
-        self.logger = setup_logger(name="Thumbzilla API - [Client]", log_file=log_file, level=level, http_ip=log_ip,
-                                   http_port=log_port)
-
-    @property
-    def soup(self) -> BeautifulSoup:
-        if not self._soup:
-            raise ValueError("You probably forgot to call init")
-
-        return self._soup
-
-    async def init(self):
-        if not self.html_content:
-            self.html_content = await get_html_content(core=self.core, url=self.url)
-
-        assert isinstance(self.html_content, str)
-        self._soup = BeautifulSoup(self.html_content, parser)
-        self.script = self.parse_script()
-        return self
-
-    def parse_script(self):
-        """
-        Extracts the JSON script
-        :return:
-        """
-        stuff = self.soup.find("script", attrs={"type": "application/ld+json"}).text
-        return json.loads(stuff).get("@graph")
-
-    @cached_property
-    def video_id(self) -> str:
-        """Extracts the unique video ID."""
-        return re.search(r'-video/(\d+)', self.url).group(1)
-
-    @cached_property
-    def duration(self) -> int:
-        """Returns the video duration in seconds."""
-        return int(re.search(r'PT(\d+)S', self.script[1].get("duration")).group(1))
-
-    @cached_property
-    def thumbnail(self) -> str:
-        """Returns the main preview image/poster URL."""
-        return self.script[1].get("thumbnailUrl")
-
-    @cached_property
-    def embed_url(self) -> str:
-        return self.script[1].get("embedUrl")
-
-    @cached_property
-    def views(self) -> str:
-        return self.script[1].get("interactionCount")
-
-    @cached_property
-    def publish_date(self) -> str:
-        return self.script[1].get("uploadDate")
-    @cached_property
-    def publish_date_thumbnail(self) -> str:
-        return self.script[0].get("datePublished")
-
-    @cached_property
-    def description(self) -> str:
-        return self.script[0].get("description")
-
-    @cached_property
-    def title(self) -> str:
-        return self.script[0].get("name")
-
-    @cached_property
-    def author_name(self) -> str:
-        return self.script[0].get("author")
 
 
-    # --- Video Streams & Formats ---
+@dataclass(kw_only=True, slots=True)
+class Video(BaseMedia):
+    url: str
+    core: BaseCore
+    video_id: str | None = None
+    duration: str | None = None
+    thumbnail: str | None = None
+    embed_url: str | None = None
+    views: str | None = None
+    publish_date: str | None = None
+    publish_date_thumbnail: str | None = None
+    description: str | None = None
+    title: str | None = None
+    author_name: str | None = None
+    m3u8_url: str | None = None
+    m3u8_base_url: str | None = None
+    media_definitions: dict | None = None
 
-    @cached_property
-    def media_definitions(self) -> dict:
-        """Returns the raw list of dictionaries containing video streams (HLS, MP4)."""
-        assert isinstance(self.html_content, str)
-        return json.loads(re.search(r'"mediaDefinitions"\s*:\s*(\[.*?])', self.html_content).group(1))
+    # Optional
+    preview_video_url: str | None = None
+    performers: list[str] | None = None
+    uploader_url: str | None = None
 
-    async def m3u8_base_url(self) -> str | None:
-        """Convenience property to quickly get the main HLS adaptive stream path."""
-        url = None
-        for media in self.media_definitions:
+    async def _perform_load(self, api: bool, html: bool, anything_else: bool):
+        if html:
+            await asyncio.gather(self._fetch_html())
+
+    async def _fetch_html(self):
+        html_content = await get_html_content(url=self.url, core=self.core)
+        assert isinstance(html_content, str)
+        data: dict = await asyncio.to_thread(self._extract_html, html_content)
+        allowed_fields = [field.name for field in fields(self)]
+
+        for key, value in data.items():
+            if key in allowed_fields:
+                setattr(self, key, value)
+
+
+        stuff = await get_html_content(core=self.core, url=self.m3u8_url)
+        self.m3u8_base_url = self.get_m3u8_base_url(stuff)
+
+    def _extract_html(self, html_content: str) -> dict:
+        parser = LexborHTMLParser(html_content)
+
+        stuff = parser.css_first('script[type="application/ld+json"]').text()
+        script = json.loads(stuff).get("@graph")
+        video_id = re.search(r'porn-video/(\d+)', self.url).group(1)
+        duration = int(re.search(r'PT(\d+)S', script[1].get("duration")).group(1))
+        thumbnail = script[1].get("thumbnailUrl")
+        embed_url = script[1].get("embedUrl")
+        views = script[1].get("interactionCount")
+        publish_date = script[1].get("uploadDate")
+        publish_date_thumbnail = script[0].get("datePublished")
+        description = script[0].get("description")
+        title = script[0].get("name")
+        author_name = script[0].get("author")
+        media_definitions = json.loads(re.search(r'"mediaDefinitions"\s*:\s*(\[.*?])', html_content).group(1))
+
+        m3u8_url = None
+        for media in media_definitions:
             if media.get('format') == 'hls':
-                url = media.get('videoUrl')
+                m3u8_url = media.get('videoUrl')
 
-        if not url:
-            raise ValueError("Could not extract the HLS URL, please report this!")
+        return {
+            "video_id": video_id,
+            "duration": duration,
+            "thumbnail": thumbnail,
+            "embed_url": embed_url,
+            "views": views,
+            "publish_date": publish_date,
+            "publish_date_thumbnail": publish_date_thumbnail,
+            "description": description,
+            "title": title,
+            "author_name": author_name,
+            "m3u8_url": m3u8_url,
+            "media_definitions": media_definitions
+        }
 
-        assert isinstance(url, str)
-        stuff = await get_html_content(core=self.core, url=url)
-        assert isinstance(stuff, str)
+    @staticmethod
+    def get_m3u8_base_url(stuff) -> str | None:
+        """Convenience property to quickly get the main HLS adaptive stream path."""
         data = json.loads(stuff)
 
         m3u8_lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
@@ -221,227 +193,181 @@ class Video:
 
         return "\n".join(m3u8_lines)
 
-
-    async def download(self, quality, path="./", callback: callback_hint=None, no_title=False, remux: bool = False,
-                 callback_remux: callback_hint=None, start_segment: int = 0, stop_event: asyncio.Event | None = None,
-                 segment_state_path: str | None = None, segment_dir: str | None = None,
-                 return_report: bool = False, cleanup_on_stop: bool = True, keep_segment_dir: bool = False
-                 ) -> bool | DownloadReport:
-        """
-        :param callback:
-        :param quality:
-        :param path:
-        :param no_title:
-        :param remux:
-        :param callback_remux:
-        :param start_segment:
-        :param stop_event:
-        :param segment_state_path:
-        :param segment_dir:
-        :param return_report:
-        :param cleanup_on_stop:
-        :param keep_segment_dir:
-        :return:
-        """
-        if not no_title:
-            path = os.path.join(path, f"{self.title}.mp4")
-
-        return await self.core.download(video=self, quality=quality, path=path, callback=callback, remux=remux,
-                                         callback_remux=callback_remux, start_segment=start_segment,
-                                         stop_event=stop_event,
-                                         segment_state_path=segment_state_path, segment_dir=segment_dir,
-                                         return_report=return_report,
-                                         cleanup_on_stop=cleanup_on_stop, keep_segment_dir=keep_segment_dir)
+    async def download(self, configuration: DownloadConfigHLS) -> bool | DownloadReport:
+        logger.info(f"Starting download for video: {self.title}")
+        config = configuration
+        config.m3u8_base_url = self.m3u8_base_url
 
 
-class UserHelper(Helper):
-    def __init__(self, url: str, core: BaseCore):
-        super().__init__(core=core, video_constructor=Video, alternative_constructor=None)
-        self.url = url
-        self.core = core
-        self.html_content = None
-        self.logger = setup_logger(name="Tube8 API - [Amateur]", log_file=None, level=logging.ERROR)
+        if not config.no_title:
+            config.path = os.path.join(config.path, f"{self.title}.mp4")
 
-    def enable_logging(self, log_file: str | None = None, level: int | None = None, log_ip: str | None = None,
-                       log_port: int | None = None):
-        if not level:
-            level = logging.DEBUG
-
-        self.logger = setup_logger(name="Tube8 API - [Amateur]", log_file=log_file, level=level, http_ip=log_ip,
-                                   http_port=log_port)
-
-    @property
-    def soup(self) -> BeautifulSoup:
-        if not self._soup:
-            raise ValueError("You probably forgot to call init")
-
-        return self._soup
-
-    async def init(self):
-        self.html_content = await get_html_content(core=self.core, url=self.url)
-
-        assert isinstance(self.html_content, str)
-        self._soup = BeautifulSoup(self.html_content, parser)
-        return self
-
-    @cached_property
-    def name(self) -> str:
         try:
-            return self.soup.find("h1", class_="name-title").text
+            return await self.core.download(config)
+
+        except Exception as e:
+            raise DownloadFailed(str(e))
+
+
+@dataclass(kw_only=True, slots=True)
+class UserHelper(BaseMedia):
+    url: str
+    core: BaseCore
+    name: str | None = None
+
+    async def _perform_load(self, api: bool, html: bool, anything_else: bool):
+        if html:
+            await asyncio.gather(self._fetch_html())
+
+    async def _fetch_html(self):
+        html_content = await get_html_content(core=self.core, url=self.url)
+        assert isinstance(html_content, str)
+        data: dict = await asyncio.to_thread(self._extract_html, html_content)
+        allowed_fields = [field.name for field in fields(self)]
+
+        for key, value in data.items():
+            if key in allowed_fields:
+                setattr(self, key, value)
+
+    @staticmethod
+    def _extract_html(html_content: str) -> dict:
+        parser = LexborHTMLParser(html_content)
+        try:
+            name = parser.css_first("h1.name-title").text(strip=True)
 
         except AttributeError:
-            return re.findall(r'username: "(.*?)"', self.html_content)[1]
+            name = re.findall(r'username: "(.*?)"', html_content)[1]
 
-    @cached_property
-    def rank(self) -> str:
-        return self.soup.find_all("p", class_="info-stat-data")[0].text
-
-    @cached_property
-    def subscribers_count(self) -> str:
-        return self.soup.find_all("p", class_="info-stat-data")[2].text
-
-    @cached_property
-    def views(self) -> str:
-        return self.soup.find_all("p", class_="info-stat-data")[1].text
-
+        return {
+            "name": name,
+        }
 
     async def get_videos(self, pages: int = 2,
                          videos_concurrency: int | None = None,
                          pages_concurrency: int | None = None,
                          on_video_error: on_error_hint = on_error,
-                         on_page_error: on_error_hint = None
-                         ) -> AsyncGenerator[Video, None]:
+                         on_page_error: on_error_hint = None,
+                         keep_original_order: bool = False,
+                         load_html: bool = False,
+                         ) -> AsyncGenerator[ScrapeResult, None]:
 
+        helper = Helper(core=self.core, constructor=Video)
         page_urls = [f"{self.url}?page={page}" for page in range(1, pages + 1)]
         videos_concurrency = videos_concurrency or self.core.configuration.videos_concurrency
         pages_concurrency = pages_concurrency or self.core.configuration.pages_concurrency
-
         assert videos_concurrency and pages_concurrency
-        async for video in self.iterator(target_page_urls=page_urls, max_video_concurrency=videos_concurrency,
-                                         max_page_concurrency=pages_concurrency, video_link_extractor=extractor_html,
-                                         on_video_error=on_video_error,
-                                         on_page_error=on_page_error):
-            yield video
+        async for result in helper.iterator(target_page_urls=page_urls, max_video_concurrency=videos_concurrency,
+                                         max_page_concurrency=pages_concurrency, video_link_extractor=extractor_search,
+                                         on_video_error=on_video_error, keep_original_order=keep_original_order,
+                                         on_page_error=on_page_error, fetch_html=load_html):
+            yield result
 
 
+@dataclass(kw_only=True, slots=True)
 class Pornstar(UserHelper):
-    @cached_property
-    def pornstar_information(self) -> dict:
+    pornstar_information: dict | None = None
+
+    @classmethod
+    def _extract_html(cls, html_content: str) -> dict:
+        data = super(Pornstar, cls)._extract_html(html_content)
+
+        parser = LexborHTMLParser(html_content)
+
         thing = {}
-        keys = self.soup.find_all("p", class_="info-stat-label")
-        values = self.soup.find_all("p", class_="info-stat-data")
+        keys = parser.css("p.info-stat-label")
+        values = parser.css("p.info-stat-data")
 
         for key, value in zip(keys, values):
             thing.update({key.text: value.text})
 
-        return thing
+        data["pornstar_information"] = thing
+        return data
 
 
+@dataclass(kw_only=True, slots=True)
 class Amateur(UserHelper):
     pass
 
 
+@dataclass(kw_only=True, slots=True)
 class Channel(UserHelper):
-    def __init__(self, url: str, core: BaseCore):
-        super().__init__(core=core, url=url)
-        self.core = core
-        self.url = url
-        self._soup = None
-        self.html_content = None
-        self.logger = setup_logger(name="Tube8 API - [Channel]", log_file=None, level=logging.ERROR)
+    url: str
+    core: BaseCore
+    name: str | None = None
+    rank: str | None = None
+    views: str | None = None
+    videos_count: str | None = None
 
-    def enable_logging(self, log_file: str | None = None, level: int | None = None, log_ip: str | None = None,
-                       log_port: int | None = None):
-        if not level:
-            level = logging.DEBUG
+    async def _perform_load(self, api: bool, html: bool, anything_else: bool):
+        if html:
+            await asyncio.gather(self._fetch_html())
 
-        self.logger = setup_logger(name="Tube8 API - [Channel]", log_file=log_file, level=level, http_ip=log_ip,
-                                   http_port=log_port)
+    async def _fetch_html(self):
+        html_content = await get_html_content(core=self.core, url=self.url)
+        assert isinstance(html_content, str)
+        data: dict = await asyncio.to_thread(self._extract_html, html_content)
+        allowed_fields = [field.name for field in fields(self)]
+        for key, value in data.items():
+            if key in allowed_fields:
+                setattr(self, key, value)
 
-    @property
-    def soup(self) -> BeautifulSoup:
-        if not self._soup:
-            raise ValueError("You probably forgot to call init")
+    @staticmethod
+    def _extract_html(html_content: str) -> dict:
+        parser = LexborHTMLParser(html_content)
+        name = parser.css_first("h1.name-title").text(strip=True)
+        rank = parser.css_first("p.info-stat-data").text(strip=True)
+        views = parser.css("p.info-stat-data")[1].text(strip=True)
+        videos_count = parser.css("p.info-stat-data")[2].text(strip=True)
 
-        return self._soup
+        return {
+            "name": name,
+            "rank": rank,
+            "views": views,
+            "videos_count": videos_count,
+        }
 
-
-    async def init(self):
-        if not self.html_content:
-            self.html_content = await get_html_content(core=self.core, url=self.url)
-
-        assert isinstance(self.html_content, str)
-        self._soup = BeautifulSoup(self.html_content, parser)
-        return self
-
-
-    async def get_videos(self, pages: int = 2,
-                     videos_concurrency: int | None = None,
-                     pages_concurrency: int | None = None,
-                     on_video_error: on_error_hint = on_error,
-                     on_page_error: on_error_hint = None
-                     ) -> AsyncGenerator[Video, None]:
-
-        page_urls = [f"{self.url}?page={page}" for page in range(1, pages + 1)]
-        videos_concurrency = videos_concurrency or self.core.configuration.videos_concurrency
-        pages_concurrency = pages_concurrency or self.core.configuration.pages_concurrency
-        assert videos_concurrency and pages_concurrency
-        async for video in self.iterator(target_page_urls=page_urls, max_video_concurrency=videos_concurrency,
-                                         max_page_concurrency=pages_concurrency, video_link_extractor=extractor_html,
-                                         on_video_error=on_video_error,
-                                         on_page_error=on_page_error):
-            yield video
-
-
-class Client(Helper):
+class Client:
     def __init__(self, core: BaseCore = BaseCore()):
-        super().__init__(core=core, video_constructor=Video)
-        self.core = core or BaseCore()
+        self.core = core
         self.core.initialize_session()
         assert isinstance(self.core.session, AsyncSession)
         self.core.session.headers.update(HEADERS)
         self.core.session.cookies.update(COOKIES)
-        self.logger = setup_logger(name="Tube8 API - [Client]", log_file=None, level=logging.ERROR)
 
-
-    def enable_logging(self, log_file: str | None = None, level: int | None =None, log_ip: str | None = None, log_port: int | None = None):
-        if not level:
-            level = logging.DEBUG
-
-        self.logger = setup_logger(name="Tube8 API - [Client]", log_file=log_file, level=level, http_ip=log_ip,
-                                   http_port=log_port)
-
-
-    async def get_video(self, url: str) -> Video:
+    async def get_video(self, url: str, load_html: bool = True) -> Video:
+        logger.info(f"Fetching video info for: {url}")
         video = Video(core=self.core, url=url)
-        return await video.init()
+        return await video.load(html=load_html)
 
-    async def get_pornstar(self, url: str) -> Pornstar:
+    async def get_pornstar(self, url: str, load_html: bool = True) -> Pornstar:
         pornstar = Pornstar(core=self.core, url=url)
-        return await pornstar.init()
+        return await pornstar.load(html=load_html)
 
-    async def get_channel(self, url: str) -> Channel:
+    async def get_channel(self, url: str, load_html: bool = True) -> Channel:
         channel = Channel(core=self.core, url=url)
-        return await channel.init()
+        return await channel.load(html=load_html)
 
-    async def get_amateur(self, url: str) -> Amateur:
+    async def get_amateur(self, url: str, load_html: bool = True) -> Amateur:
         amateur = Amateur(core=self.core, url=url)
-        return await amateur.init()
+        return await amateur.load(html=load_html)
 
     async def search(self, query: str, pages: int = 2,
                      videos_concurrency: int | None = None,
                      pages_concurrency: int | None = None,
                      on_video_error: on_error_hint = on_error,
-                     on_page_error: on_error_hint = None
-                     ) -> AsyncGenerator[Video, None]:
-        # I am too lazy to implement search filters
+                     on_page_error: on_error_hint = None,
+                     keep_original_order: bool = False,
+                     load_html: bool = False,
+                     ) -> AsyncGenerator[ScrapeResult, None]:
+        logger.info(f"Searching for query: {query}, pages: {pages}")
+        helper = Helper(core=self.core, constructor=Video)
         page_urls = [f"https://tube8.com/searches.html/?q={query}&page={page}" for page in range(1, pages + 1)]
         videos_concurrency = videos_concurrency or self.core.configuration.videos_concurrency
         pages_concurrency = pages_concurrency or self.core.configuration.pages_concurrency
         assert videos_concurrency and pages_concurrency
 
-        async for video in self.iterator(target_page_urls=page_urls, max_video_concurrency=videos_concurrency,
+        async for result in helper.iterator(target_page_urls=page_urls, max_video_concurrency=videos_concurrency,
                                          max_page_concurrency=pages_concurrency, video_link_extractor=extractor_search,
-                                         on_video_error=on_video_error,
-                                         on_page_error=on_page_error):
-            yield video
+                                         on_video_error=on_video_error, keep_original_order=keep_original_order,
+                                         on_page_error=on_page_error, fetch_html=load_html):
+            yield result
