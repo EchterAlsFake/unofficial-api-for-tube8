@@ -1,32 +1,15 @@
-"""
-Copyright (C) 2026 Johannes Habel
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""
 from __future__ import annotations
+import copy
 import os
 import re
 import json
 import asyncio
 import logging
 
-logger = logging.getLogger(__name__)
-
 from typing import AsyncGenerator
+from dataclasses import dataclass, fields
 from curl_cffi import Response, AsyncSession
 from selectolax.lexbor import LexborHTMLParser
-from dataclasses import dataclass, fields
 from base_api.modules.type_hints import DownloadReport
 from base_api import BaseCore, Helper, BaseMedia, DownloadConfigHLS, ScrapeResult
 from base_api.modules.errors import InvalidProxy, UnknownError, NetworkRequestError, BotProtectionDetected, ResourceGone
@@ -35,6 +18,10 @@ from tube8_api.modules.consts import HEADERS, COOKIES, extractor_search
 from tube8_api.modules.errors import (NetworkError, NotFound, UnknownNetworkError, BotDetection, ProxyError,
                                       DownloadFailed)
 from tube8_api.modules.type_hints import on_error_hint
+
+
+logger = logging.getLogger("Tube8 API")
+logger.addHandler(logging.NullHandler())
 
 
 async def on_error(url: str, error: Exception, attempt: int) -> bool:
@@ -102,7 +89,7 @@ class Video(BaseMedia):
         html_content = await get_html_content(url=self.url, core=self.core)
         assert isinstance(html_content, str)
         data: dict = await asyncio.to_thread(self._extract_html, html_content)
-        allowed_fields = [field.name for field in fields(self)]
+        allowed_fields = {field.name for field in fields(self)}
 
         for key, value in data.items():
             if key in allowed_fields:
@@ -195,7 +182,7 @@ class Video(BaseMedia):
 
     async def download(self, configuration: DownloadConfigHLS) -> bool | DownloadReport:
         logger.info(f"Starting download for video: {self.title}")
-        config = configuration
+        config = copy.deepcopy(configuration)
         config.m3u8_base_url = self.m3u8_base_url
 
 
@@ -223,7 +210,7 @@ class UserHelper(BaseMedia):
         html_content = await get_html_content(core=self.core, url=self.url)
         assert isinstance(html_content, str)
         data: dict = await asyncio.to_thread(self._extract_html, html_content)
-        allowed_fields = [field.name for field in fields(self)]
+        allowed_fields = {field.name for field in fields(self)}
 
         for key, value in data.items():
             if key in allowed_fields:
@@ -251,8 +238,9 @@ class UserHelper(BaseMedia):
                          load_html: bool = False,
                          ) -> AsyncGenerator[ScrapeResult, None]:
 
+        url = self.url
         helper = Helper(core=self.core, constructor=Video)
-        page_urls = [f"{self.url}?page={page}" for page in range(1, pages + 1)]
+        page_urls = [f"{url}?page={page}" for page in range(1, pages + 1)]
         videos_concurrency = videos_concurrency or self.core.configuration.videos_concurrency
         pages_concurrency = pages_concurrency or self.core.configuration.pages_concurrency
         assert videos_concurrency and pages_concurrency
@@ -306,7 +294,7 @@ class Channel(UserHelper):
         html_content = await get_html_content(core=self.core, url=self.url)
         assert isinstance(html_content, str)
         data: dict = await asyncio.to_thread(self._extract_html, html_content)
-        allowed_fields = [field.name for field in fields(self)]
+        allowed_fields = {field.name for field in fields(self)}
         for key, value in data.items():
             if key in allowed_fields:
                 setattr(self, key, value)

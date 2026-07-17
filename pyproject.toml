@@ -46,10 +46,10 @@ av = ["av"]
 Homepage = "https://github.com/EchterAlsFake/unofficial-api-for-tube8"
 Repository = "https://github.com/EchterAlsFake/unofficial-api-for-tube8"
 "Bug Tracker" = "https://github.com/EchterAlsFake/unofficial-api-for-tube8/issues"
+"Support me on Ko-Fi" = "https://ko-fi.com/EchterAlsFake"
+"Donate via PayPal" = "https://paypal.me/EchterAlsFake"
+"Donate via Crypto" = "https://nowpayments.io/donation/EchterAlsFake"
 
 [tool.uv.build-backend]
 module-name = "tube8_api"
 module-root = ""
-
-[tool.uv.sources]
-eaf-base-api = { path = "../eaf_base_api", editable = true }
