@@ -265,7 +265,7 @@ class UserHelper(BaseMedia):
         self,
         pages: int = 2,
         iterator_config: IteratorConfig | None = None,
-    ) -> AsyncGenerator[ScrapeResult, None]:
+    ) -> AsyncGenerator[ScrapeResult[Video], None]:
 
         url = self.url
         helper = Helper(core=self.core, constructor=Video)
@@ -377,7 +377,7 @@ class Client:
         query: str,
         pages: int = 2,
         iterator_config: IteratorConfig | None = None,
-    ) -> AsyncGenerator[ScrapeResult, None]:
+    ) -> AsyncGenerator[ScrapeResult[Video], None]:
         logger.info(f"Searching for query: {query}, pages: {pages}")
         helper = Helper(core=self.core, constructor=Video)
         page_urls = [f"https://tube8.com/searches.html/?q={query}&page={page}" for page in range(1, pages + 1)]
