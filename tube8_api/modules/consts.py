@@ -52,7 +52,6 @@ def extractor_search(html_content: str) -> list:
     """
     results = []
     parser = LexborHTMLParser(html_content)
-
     # 1. Locate the main container gracefully
     stuff = parser.css_first("div.searchResults.full-row-thumbs.js_video_row.tm_search_result_videos")
     if not stuff:
@@ -96,7 +95,7 @@ def extractor_search(html_content: str) -> list:
         # Clean up and validate specific fields
 
         if video_data["video_url"]:
-            video_data["url"] = f"https://www.thumbzilla.com{video_data['video_url']}"
+            video_data["url"] = f"https://www.tube8.com{video_data['video_url']}"
 
         # 4. Handle Edge Cases & Logging
         missing_attrs = [key for key, value in video_data.items() if value is None]
