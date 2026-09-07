@@ -51,9 +51,13 @@ Repository = "https://github.com/EchterAlsFake/unofficial-api-for-tube8"
 "Donate via PayPal" = "https://paypal.me/EchterAlsFake"
 "Donate via Crypto" = "https://nowpayments.io/donation/EchterAlsFake"
 
+[project.scripts]
+tube8_api = "tube8_api.api:main"
+
 [tool.uv.build-backend]
 module-name = "tube8_api"
 module-root = ""
+
 
 [tool.uv.sources]
 eaf-base-api = { path = "../eaf_base_api", editable = true }
