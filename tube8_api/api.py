@@ -7,6 +7,8 @@ import asyncio
 import logging
 import argparse
 
+from base_api.modules.logger import configure_app_logging
+
 from base_api.modules.static_functions import str_to_bool
 
 from typing import AsyncGenerator, ClassVar, Any
@@ -35,6 +37,7 @@ from base_api import (
     make_iterator_config as _base_make_iterator_config,
 )
 from base_api.modules.errors import (
+    DownloadCancelled,
     BotProtectionDetected,
     HTTPStatusError,
     InvalidProxy,
@@ -78,21 +81,30 @@ async def get_html_content(core: BaseCore, url: str) -> str:
         return await core.fetch_text(url)
 
     except HTTPStatusError as e:
+        logger.exception("Request failed for %s: %s", url, e)
         if e.status_code == 404:
             raise NotFound(f"Server returned 404 for: {url}") from e
-        raise NetworkError(str(e)) from e
+        raise NetworkError(f"Request failed for {url}: {e}") from e
 
     except NetworkRequestError as e:
-        raise NetworkError(str(e)) from e
+        logger.exception("Request failed for %s: %s", url, e)
+        raise NetworkError(f"Request failed for {url}: {e}") from e
 
     except InvalidProxy as e:
-        raise ProxyError(str(e)) from e
+        logger.exception("Request failed for %s: %s", url, e)
+        raise ProxyError(f"Request failed for {url}: {e}") from e
 
     except BotProtectionDetected as e:
-        raise BotDetection(str(e)) from e
+        logger.exception("Request failed for %s: %s", url, e)
+        raise BotDetection(f"Request failed for {url}: {e}") from e
 
     except UnknownError as e:
-        raise UnknownNetworkError(str(e)) from e
+        logger.exception("Request failed for %s: %s", url, e)
+        raise UnknownNetworkError(f"Request failed for {url}: {e}") from e
+
+    except Exception:
+        logger.exception("Failed to fetch or decode response for %s", url)
+        raise
 
 
 
@@ -175,20 +187,22 @@ class Video(BaseMedia):
 
 
     async def download(self, configuration: DownloadConfigHLS) -> bool | DownloadReport:
-        await self.load_fields("title", "m3u8_base_url")
-        logger.info(f"Starting download for video: {self.title}")
-        config = copy.deepcopy(configuration)
-        config.m3u8_base_url = self.m3u8_base_url
-
-
-        if not config.no_title:
-            config.path = os.path.join(config.path, f"{self.title}.mp4")
-
         try:
-            return await self.core.download(config)
+            await self.load_fields("title", "m3u8_base_url")
+            logger.info(f"Starting download for video: {self.title}")
+            config = copy.deepcopy(configuration)
+            config.m3u8_base_url = self.m3u8_base_url
 
+
+            if not config.no_title:
+                config.path = os.path.join(config.path, f"{self.title}.mp4")
+
+            return await self.core.download(config)
+        except DownloadCancelled:
+            raise
         except Exception as e:
-            raise DownloadFailed(str(e))
+            logger.exception("Download failed for %s: %s", self.url, e)
+            raise DownloadFailed(f"Download failed for {self.url}: {e}") from e
 
 
 @dataclass(kw_only=True, slots=True)
@@ -380,10 +394,12 @@ async def run_main(args_list: list[str] | None = None):
             await video.download(configuration=config)
             print(f"Download complete: {title}")
         except Exception as e:
+            logger.exception("CLI failed while processing %s", url)
             print(f"Error downloading {url}: {e}")
 
 
 def main():
+    configure_app_logging(level=logging.INFO)
     try:
         asyncio.run(run_main())
     except KeyboardInterrupt:
@@ -392,4 +408,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
