@@ -3,7 +3,6 @@ from selectolax.lexbor import LexborHTMLParser
 
 HEADERS = {
     'Accept': '*/*',
-    'Accept-Language': 'en,en-US',
     'Connection': 'keep-alive',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/114.0',
     'Referer': 'https://www.tube8.com/',
@@ -27,5 +26,5 @@ from base_api.modules.static_functions import extract_video_grid
 
 
 
-def extractor_search(html_content: str) -> list:
-    return extract_video_grid(LexborHTMLParser(html_content), "https://www.tube8.com", logger)
+def extractor_search(html_content: str, base_url: str = "https://www.tube8.com") -> list:
+    return extract_video_grid(LexborHTMLParser(html_content), base_url, logger)
