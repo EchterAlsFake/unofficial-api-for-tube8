@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from curl_cffi import AsyncSession
 from selectolax.lexbor import LexborHTMLParser
 from base_api.modules.type_hints import DownloadReport
-from base_api.modules.config import IteratorConfig
+from base_api.modules.config import IteratorConfig, RuntimeConfig
 from base_api import (
     BaseCore,
     BaseMedia,
@@ -374,7 +374,10 @@ class UserHelper(BaseMedia):
 
     async def _load_html(self) -> dict[str, object]:
         html_content = await get_html_content(core=self.core, url=self.url, owner=self)
-        return await asyncio.to_thread(self._extract_html, html_content)
+        data = await asyncio.to_thread(self._extract_html, html_content)
+        if not data.get("name"):
+            raise ValueError(f"Profile identity not found at {self.url}")
+        return data
 
     def _extract_html(self, html_content: str) -> dict:
         parser = LexborHTMLParser(html_content)
@@ -402,13 +405,6 @@ class UserHelper(BaseMedia):
                 content = meta_el.attributes.get("content")
                 if content:
                     name = content.strip()
-
-        if not name:
-            match = re.search(r'username:\s*"([^"]+)"', html_content)
-            if not match:
-                match = re.search(r'"name":\s*"([^"]+)"', html_content)
-            if match:
-                name = match.group(1).strip()
 
         if not name:
             logger.warning("Could not extract name for %s", self.url)
@@ -527,21 +523,21 @@ class Channel(UserHelper):
                 if key and val:
                     stats[key] = val
 
-        rank = stats.get("rank") or stats.get("channel rank") or stats.get("model rank")
+        rank = stats.get("rank") or stats.get("rang") or stats.get("channel rank") or stats.get("model rank")
         if not rank:
             for k, v in stats.items():
                 if "rank" in k:
                     rank = v
                     break
 
-        views = stats.get("views")
+        views = stats.get("views") or stats.get("vues") or stats.get("aufrufe")
         if not views:
             for k, v in stats.items():
                 if "view" in k:
                     views = v
                     break
 
-        videos_count = stats.get("videos") or stats.get("videos count") or stats.get("video count")
+        videos_count = stats.get("videos") or stats.get("vidéos") or stats.get("videos count") or stats.get("video count")
         if not videos_count:
             for k, v in stats.items():
                 if "video" in k:
@@ -554,8 +550,6 @@ class Channel(UserHelper):
             rank = all_data[0]
         if not views and len(all_data) > 1:
             views = all_data[1]
-        if not videos_count and len(all_data) > 2:
-            videos_count = all_data[2]
 
         if not rank:
             logger.warning("Could not extract rank for %s", self.url)
@@ -620,7 +614,8 @@ class Client:
         iterator_config: IteratorConfig | None = None,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
         logger.info(f"Searching for query: {query}, pages: {pages}")
-        page_urls = [f"https://tube8.com/searches.html/?q={query}&page={page}" for page in range(1, pages + 1)]
+        page_urls = [update_url_query("https://www.tube8.com/searches.html/", q=query, page=page)
+                     for page in range(1, pages + 1)]
         return scrape_stream(
             core=self.core,
             constructor=Video,
@@ -659,18 +654,21 @@ async def run_main(args_list: list[str] | None = None):
         parser.print_help()
         return
 
-    client = Client()
-    for url in urls:
-        print(f"Fetching video information for: {url}")
-        try:
-            video = await client.get_video(url, load_html=True)
-            title = getattr(video, "title", None) or url
-            print(f"Starting download for: {title}")
-            await video.download(configuration=config)
-            print(f"Download complete: {title}")
-        except Exception as e:
-            logger.exception("CLI failed while processing %s", url)
-            print(f"Error downloading {url}: {e}")
+    async with BaseCore(RuntimeConfig()) as core:
+        client = Client(core=core)
+        for url in urls:
+            print(f"Fetching video information for: {url}")
+            try:
+                video = await client.get_video(url, load_html=True)
+                title = getattr(video, "title", None) or url
+                print(f"Starting download for: {title}")
+                result = await video.download(configuration=config)
+                if result is False or getattr(result, "status", None) == "failed":
+                    raise DownloadFailed("Download did not complete")
+                print(f"Download complete: {title}")
+            except Exception as e:
+                logger.exception("CLI failed while processing %s", url)
+                print(f"Error downloading {url}: {e}")
 
 
 def main():

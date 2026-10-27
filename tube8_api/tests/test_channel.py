@@ -4,7 +4,7 @@ from tube8_api import Client
 @pytest.mark.asyncio
 async def test_all():
     client = Client()
-    channel = await client.get_channel("https://www.tube8.com/pornstar/nancy-a/")
+    channel = await client.get_channel("https://www.tube8.com/channel/teamskeet/")
 
     assert isinstance(channel.name, str) and len(channel.name) > 0
     assert isinstance(channel.views, str) and len(channel.views) > 0
