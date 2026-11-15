@@ -1,3 +1,18 @@
+# 2.0.0
+
+Release 2.0.0
+
+Update pagination handling, validation, and documentation.
+
+Changes since 1.3.3:
+
+```text
+README.md        |  20 ++++++++++
+ pyproject.toml   |   4 +-
+ tube8_api/api.py | 110 ++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ 3 files changed, 122 insertions(+), 12 deletions(-)
+```
+
 # Changelog
 
 ## 1.3.3 — 2026-10-27

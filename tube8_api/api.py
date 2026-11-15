@@ -1,4 +1,15 @@
 from __future__ import annotations
+
+from base_api import (
+    paginated_stream,
+    PageInfo,
+    validate_pagination,
+    VideoUnavailable,
+    ScrapeStream,
+)
+from urllib.parse import urlsplit
+from base_api.modules.pagination import linked_page
+from urllib.parse import urljoin
 import re
 from functools import partial
 import json
@@ -415,23 +426,33 @@ class UserHelper(BaseMedia):
 
     def get_videos(
         self,
-        pages: int = 2,
+        pages: int | str = 1,
         iterator_config: IteratorConfig | None = None,
+        *,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        validate_pagination(pages, start_page)
         url = self.resolved_url or self.url
-        page_urls = [update_url_query(url, page=page) for page in range(1, pages + 1)]
-        return scrape_stream(
+        page_url = lambda page: update_url_query(url, page=page)
+        return paginated_stream(
             core=self.core,
             constructor=Video,
-            target_page_urls=page_urls,
             item_extractor=partial(extractor_search, base_url=url),
             iterator_config=iterator_config,
+            page_url=page_url,
+            pages=pages,
+            start_page=start_page,
+            page_info=lambda content, page, rows: _pagination_info(
+                content, page, rows, page_url=page_url
+            ),
         )
 
 
 @dataclass(kw_only=True, slots=True)
 class User(UserHelper):
-    pass
+    def get_videos(self, pages: int | str = 1, iterator_config=None, *, start_page=1):
+        validate_pagination(pages, start_page)
+        return ScrapeStream(_user_videos(self, pages, start_page, iterator_config))
 
 
 @dataclass(kw_only=True, slots=True)
@@ -610,20 +631,88 @@ class Client:
     def search(
         self,
         query: str,
-        pages: int = 2,
+        pages: int | str = 1,
         iterator_config: IteratorConfig | None = None,
+        *,
+        start_page: int = 1,
     ) -> AsyncGenerator[ScrapeResult[Video], None]:
+        validate_pagination(pages, start_page)
         logger.info(f"Searching for query: {query}, pages: {pages}")
-        page_urls = [update_url_query("https://www.tube8.com/searches.html/", q=query, page=page)
-                     for page in range(1, pages + 1)]
-        return scrape_stream(
+        page_url = lambda page: update_url_query(
+            "https://www.tube8.com/searches.html/", q=query, page=page
+        )
+        return paginated_stream(
             core=self.core,
             constructor=Video,
-            target_page_urls=page_urls,
             item_extractor=extractor_search,
             iterator_config=iterator_config,
+            page_url=page_url,
+            pages=pages,
+            start_page=start_page,
+            page_info=lambda content, page, rows: _pagination_info(
+                content, page, rows, page_url=page_url
+            ),
         )
 
+
+async def _user_videos(owner, pages, start_page, iterator_config):
+    validate_pagination(pages, start_page)
+    content = await get_html_content(core=owner.core, url=owner.url, owner=owner)
+    setup = re.search(r'"?fetchUrls"?\s*:\s*\{(.*?)\}', content, re.S)
+    match = (
+        re.search(r'"?videos"?\s*:\s*("(?:[^"\\]|\\.)*")', setup[1]) if setup else None
+    )
+    if not match:
+        raise ValueError("Profile did not expose its public video listing endpoint")
+    endpoint = urljoin(getattr(content, "url", None) or owner.url, json.loads(match[1]))
+    if (
+        urlsplit(endpoint).hostname
+        != urlsplit(getattr(content, "url", None) or owner.url).hostname
+    ):
+        raise ValueError("User listing endpoint changed host")
+    if "/user/0/" in endpoint:
+        raise NotFound("User profile does not exist")
+    # The site's Vue dashboard sends this filter explicitly, including page one.
+    page_url = lambda page: update_url_query(endpoint, f="all", page=page)
+
+    def extract(text):
+        payload = json.loads(text)
+        block = payload.get("data")
+        if not isinstance(block, dict) or not isinstance(block.get("data"), list):
+            raise ValueError("Unrecognized user-video listing response")
+        if block.get("success") is not True:
+            raise VideoUnavailable("The site did not expose this user video collection")
+        for row in block["data"]:
+            if not isinstance(row, dict) or not row.get("link"):
+                raise ValueError("User video entry omitted its link")
+            yield {
+                "url": urljoin(endpoint, row["link"]),
+                "video_id": str(row["id"]),
+                "title": row.get("title"),
+            }
+
+    def info(text, page, rows):
+        pager = json.loads(text)["data"]["pagination"]
+        return PageInfo(total_pages=int(pager["totalPages"]), terminal=not rows)
+
+    stream = paginated_stream(
+        core=owner.core,
+        constructor=Video,
+        page_url=page_url,
+        item_extractor=extract,
+        page_info=info,
+        pages=pages,
+        start_page=start_page,
+        iterator_config=iterator_config,
+        verify_first=True,
+    )
+    async with stream:
+        async for result in stream:
+            yield result
+
+
+def _pagination_info(content, page, rows, *, page_url):
+    return linked_page(content, page, rows, page_url=page_url)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -681,3 +770,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
